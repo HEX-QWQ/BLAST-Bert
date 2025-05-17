@@ -64,7 +64,7 @@ class BERTDataset(Dataset):
 
     def __getitem__(self, item):
         # 定义获取单个样本的方法，根据索引 item 返回处理后的数据
-        t1, t2, is_next_label = self.random_sent(item)
+        t1, t2,s1,s2,is_next_label = self.random_sent(item)
         # 获取两个句子及其是否连续的标签（1 表示连续，0 表示不连续）
         t1_random, t1_label = self.random_word(t1)
         # 对第一个句子进行随机词替换（掩码或随机词），返回替换后的句子和标签
@@ -77,6 +77,8 @@ class BERTDataset(Dataset):
         # 在第一个句子前后添加 SOS 和 EOS 标记
         t2 = t2_random + [self.vocab.eos_index]
         # 在第二个句子后添加 EOS 标记
+        s1 = [1.0] + s1 + [1.0]
+        s2 = s2 + [1.0]
 
         t1_label = [self.vocab.pad_index] + t1_label + [self.vocab.pad_index]
         # 为第一个句子的标签前后添加填充标记（pad_index）
@@ -89,16 +91,18 @@ class BERTDataset(Dataset):
         # 拼接两个句子，截断到最大序列长度
         bert_label = (t1_label + t2_label)[:self.seq_len]
         # 拼接两个句子的标签，截断到最大序列长度
+        s_label = (s1 + s2)[:self.seq_len]
+        s_padding = [1.0 for _ in range(self.seq_len - len(s_label))]
 
         padding = [self.vocab.pad_index for _ in range(self.seq_len - len(bert_input))]
         # 计算需要填充的长度，创建填充标记列表
-        bert_input.extend(padding), bert_label.extend(padding), segment_label.extend(padding)
+        bert_input.extend(padding), bert_label.extend(padding), segment_label.extend(padding), s_label.extend(s_padding)
         # 对输入、标签和段落标签进行填充，使长度达到 seq_len
-
         output = {"bert_input": bert_input,
                   "bert_label": bert_label,
                   "segment_label": segment_label,
-                  "is_next": is_next_label}
+                  "is_next": is_next_label,
+                  "s_label": s_label}
         # 创建输出字典，包含 BERT 输入、标签、段落标签和是否连续标签
 
         return {key: torch.tensor(value) for key, value in output.items()}
@@ -106,7 +110,7 @@ class BERTDataset(Dataset):
 
     def random_word(self, sentence):
         # 定义随机词替换方法，模拟 BERT 的掩码语言模型（MLM）任务
-        tokens = sentence.split()
+        tokens = sentence
         # 将句子按空格分割为词列表
         output_label = []
         # 初始化标签列表，用于记录原始词的索引
@@ -153,25 +157,33 @@ class BERTDataset(Dataset):
 
     def random_sent(self, index):
         # 定义随机句子选择方法，用于 BERT 的下一句预测（NSP）任务
-        t1, t2 = self.get_corpus_line(index)
-        # 获取索引对应的两个句子
+        t1, t2,s1,s2 = self.get_corpus_line(index)
+        # 获取索引对应的两个句子,及其对应的相似度
 
         # output_text, label(isNotNext:0, isNext:1)
         if random.random() > 0.5:
             # 以 50% 的概率返回连续句子
-            return t1, t2, 1
+            return t1, t2,s1,s2, 1
             # 返回第一个句子、第二个句子和标签 1（表示连续）
         else:
             # 以 50% 的概率返回不连续句子
-            return t1, self.get_random_line(), 0
+            t2,s2 = self.get_random_line()
+            return t1, t2,s1,s2, 0
             # 返回第一个句子、随机句子和标签 0（表示不连续）
 
     def get_corpus_line(self, item):
         # 定义获取指定索引的语料行方法
+        
         if self.on_memory:
             # 如果数据已加载到内存
-            return self.lines[item][0], self.lines[item][1]
-            # 返回索引对应的第一个和第二个句子
+            qgene,sgene,pident = self.lines[item]
+            sgene = sgene.split(" ")
+            pident = pident.split(" ")
+            pident = [float(x)/100 for x in pident]
+            len_sgene = len(sgene)
+
+            # 返回索引对应的第一个和第二个句子,及其对应的相似度
+            return sgene[:len_sgene//2],sgene[len_sgene//2:],pident[:len_sgene//2],pident[len_sgene//2:]
         else:
             # 如果数据未加载到内存
             line = self.file.__next__()
@@ -185,16 +197,25 @@ class BERTDataset(Dataset):
                 line = self.file.__next__()
                 # 读取第一行
 
-            t1, t2 = line[:-1].split("\t")
-            # 去掉换行符，按制表符分割为两个句子
-            return t1, t2
+            qgene,sgene,pident = line[:-1]
+            sgene = sgene.split(" ")
+            pident = pident.split(" ")
+            pident = [float(x)/100 for x in pident]
+            len_sgene = len(sgene)
+
+            return sgene[:len_sgene//2],sgene[len_sgene//2:],pident[:len_sgene//2],pident[len_sgene//2:]
             # 返回两个句子
 
     def get_random_line(self):
         # 定义获取随机句子方法
         if self.on_memory:
             # 如果数据已加载到内存
-            return self.lines[random.randrange(len(self.lines))][1]
+            qgene,sgene,pident = self.lines[random.randrange(len(self.lines))]
+            sgene = sgene.split(" ")
+            pident = pident.split(" ")
+            pident = [float(x)/100 for x in pident]
+            len_sgene = len(sgene)
+            return sgene[len_sgene//2:],pident[len_sgene//2:]
             # 从内存中随机选择一行的第二个句子
 
         line = self.file.__next__()
@@ -211,5 +232,10 @@ class BERTDataset(Dataset):
                 # 前进随机文件指针
             line = self.random_file.__next__()
             # 读取随机文件下一行
-        return line[:-1].split("\t")[1]
+        qgene,sgene,pident = line[:-1]
+        sgene = sgene.split(" ")
+        pident = pident.split(" ")
+        pident = [float(x)/100 for x in pident]
+        len_sgene = len(sgene)
+        return sgene[len_sgene//2:],pident[len_sgene//2:]
         # 返回去掉换行符后按制表符分割的第二个句子
